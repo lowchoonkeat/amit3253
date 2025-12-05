@@ -29,34 +29,40 @@ def grade_step(description, points, condition, details=""):
         if details:
             print(f"    -> Issue: {details}")
 
-def check_http_content(url, keyword):
+# Helper specifically to split connection vs content checks
+def check_website_detailed(url, keyword):
     try:
-        # Set a User-Agent to avoid being blocked by some server configs
         headers = {'User-Agent': 'Mozilla/5.0'}
         req = urllib.request.Request(url, headers=headers)
         
-        # Timeout set to 3 seconds to avoid hanging
         with urllib.request.urlopen(req, timeout=3, context=ssl_context) as response:
             if response.status == 200:
                 content = response.read().decode('utf-8')
-                # Check for keyword (student name) case-insensitive
-                if keyword.lower() in content.lower():
-                    return True, "Content matched (Student Name found)"
-                else:
-                    # --- CRITICAL FIX IN V5 ---
-                    # Strictly return False if name is missing
-                    return False, f"Page loads, but name '{keyword}' NOT found."
+                # Check 1: Did it load? YES
+                is_loaded = True
+                
+                # Check 2: Is name there?
+                is_name_found = keyword.lower() in content.lower()
+                
+                return is_loaded, is_name_found, "Page loaded successfully"
             else:
-                return False, f"HTTP Status: {response.status}"
+                return False, False, f"HTTP Status: {response.status}"
     except urllib.error.HTTPError as e:
-        return False, f"HTTP Error: {e.code}"
+        return False, False, f"HTTP Error: {e.code}"
     except urllib.error.URLError as e:
-        return False, f"Connection Error: {e.reason}"
+        return False, False, f"Connection Error: {e.reason}"
     except Exception as e:
-        return False, str(e)
+        return False, False, str(e)
+
+# Standard helper for simple checks (used in ALB/S3 tasks)
+def check_http_content(url, keyword):
+    loaded, name_found, msg = check_website_detailed(url, keyword)
+    if not loaded: return False, msg
+    if not name_found: return False, f"Page loaded, but '{keyword}' not found"
+    return True, "Success"
 
 def main():
-    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V5)")
+    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V6)")
     
     session = boto3.session.Session()
     region = session.region_name
@@ -80,14 +86,12 @@ def main():
     target_inst = None
     
     try:
-        # 1. Check EC2 Instance Launched (10 Marks)
+        # 1. Check EC2 Instance Launched (5 Marks) - REDUCED FROM 10
         instances = ec2.describe_instances(Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
         all_instances = [i for r in instances['Reservations'] for i in r['Instances']]
         
         if all_instances:
-            # Pick primary candidate
             target_inst = all_instances[0] 
-            # Refine: Look for specific Name Tag if possible
             for inst in all_instances:
                 for tag in inst.get('Tags', []):
                     if tag['Key'] == 'Name' and student_name_nospace in tag['Value'].lower().replace(" ", ""):
@@ -100,7 +104,7 @@ def main():
             for tag in target_inst.get('Tags', []):
                 if tag['Key'] == 'Name': inst_name = tag['Value']
             
-            grade_step("EC2 Instance Launched & Running", 10, True, f"ID: {found_instance_id} ({inst_name})")
+            grade_step("EC2 Instance Launched & Running", 5, True, f"ID: {found_instance_id} ({inst_name})")
             
             # 2. Check Instance Type (5 Marks)
             itype = target_inst['InstanceType']
@@ -118,32 +122,33 @@ def main():
                         from_port = perm.get('FromPort')
                         to_port = perm.get('ToPort')
                         ip_proto = perm.get('IpProtocol')
-                        
-                        # Check for "All Traffic" (-1)
                         if ip_proto == '-1':
                             has_ssh = True
                             has_http = True
-                        # Check specific TCP ports
                         elif ip_proto == 'tcp' and from_port is not None and to_port is not None:
                             if from_port <= 22 and to_port >= 22: has_ssh = True
                             if from_port <= 80 and to_port >= 80: has_http = True
             
             grade_step("Security Group: Ports 22 & 80 Open", 5, (has_ssh and has_http), f"SSH:{has_ssh} HTTP:{has_http}")
 
-            # 4. Check User Data via HTTP (5 Marks)
+            # 4. Check Web Access Split (5 Marks Load + 5 Marks Name) - NEW LOGIC
             public_ip = target_inst.get('PublicIpAddress')
             if public_ip:
                 print(f"    Testing EC2 Public IP: http://{public_ip}")
-                success, msg = check_http_content(f"http://{public_ip}", student_name_input)
-                grade_step("Web Page Loads & Shows Name", 5, success, msg)
+                is_loaded, is_name_found, msg = check_website_detailed(f"http://{public_ip}", student_name_input)
+                
+                grade_step("Website Accessible (HTTP 200)", 5, is_loaded, msg)
+                grade_step("Website Shows Student Name", 5, is_name_found, f"Name '{student_name_input}' not in HTML")
             else:
-                grade_step("Web Page Loads & Shows Name", 5, False, "No Public IP assigned to instance")
+                grade_step("Website Accessible (HTTP 200)", 5, False, "No Public IP")
+                grade_step("Website Shows Student Name", 5, False, "No Public IP")
             
         else:
-            grade_step("EC2 Instance Launched & Running", 10, False, "No running instances found.")
+            grade_step("EC2 Instance Launched & Running", 5, False, "No running instances found.")
             grade_step("Instance Type is t3.large", 5, False)
             grade_step("Security Group: Ports 22 & 80 Open", 5, False)
-            grade_step("Web Page Loads & Shows Name", 5, False)
+            grade_step("Website Accessible (HTTP 200)", 5, False)
+            grade_step("Website Shows Student Name", 5, False)
 
     except Exception as e:
         print(f"Error Task 1: {e}")
@@ -161,7 +166,6 @@ def main():
         
         if target_lt:
             grade_step("Launch Template Found (lt-*)", 5, True, f"Found: {target_lt['LaunchTemplateName']}")
-            # Get Version Data
             lt_vers = ec2.describe_launch_template_versions(LaunchTemplateId=target_lt['LaunchTemplateId'], Versions=['$Latest'])
             lt_data = lt_vers['LaunchTemplateVersions'][0]['LaunchTemplateData']
         else:

@@ -43,7 +43,8 @@ def check_http_content(url, keyword):
                 if keyword.lower() in content.lower():
                     return True, "Content matched (Student Name found)"
                 else:
-                    return True, "Page loads, but Student Name not found in HTML"
+                    # FIX: Returns False if name is missing
+                    return False, "Page loads, but Student Name NOT found in HTML"
             else:
                 return False, f"HTTP Status: {response.status}"
     except urllib.error.HTTPError as e:
@@ -54,7 +55,7 @@ def check_http_content(url, keyword):
         return False, str(e)
 
 def main():
-    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V3)")
+    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V4)")
     
     session = boto3.session.Session()
     region = session.region_name
@@ -128,7 +129,7 @@ def main():
             
             grade_step("Security Group: Ports 22 & 80 Open", 5, (has_ssh and has_http), f"SSH:{has_ssh} HTTP:{has_http}")
 
-            # 4. Check User Data via HTTP (5 Marks) - UPDATED
+            # 4. Check User Data via HTTP (5 Marks)
             public_ip = target_inst.get('PublicIpAddress')
             if public_ip:
                 print(f"    Testing EC2 Public IP: http://{public_ip}")

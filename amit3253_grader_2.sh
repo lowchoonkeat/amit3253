@@ -6,7 +6,6 @@ import ssl
 import time
 
 # --- CONFIGURATION ---
-# Ignore SSL certificate errors (common in some lab environments)
 ssl_context = ssl._create_unverified_context()
 
 # Global Score Keepers
@@ -18,62 +17,68 @@ def print_header(title):
     print(f" {title}")
     print(f"{'='*60}")
 
-def grade_step(description, points, condition, details=""):
+# Updated Helper to handle Partial Marks
+def grade_step(description, max_points, status, details=""):
     global TOTAL_MARKS, SCORED_MARKS
-    TOTAL_MARKS += points
-    if condition:
-        SCORED_MARKS += points
-        print(f"[\u2713] PASS (+{points}): {description}")
+    TOTAL_MARKS += max_points
+    
+    if status == "PASS":
+        SCORED_MARKS += max_points
+        print(f"[\u2713] PASS (+{max_points}): {description}")
+    elif status == "PARTIAL":
+        # partial is usually half marks or custom. Here we assume logic passed the specific partial score in 'max_points'
+        # BUT to keep function signature simple, we will handle point calculation outside or use a tuple?
+        # Let's simplify: The Caller decides the points awarded.
+        pass 
     else:
-        print(f"[X] FAIL (0/{points}): {description}")
+        print(f"[X] FAIL (0/{max_points}): {description}")
         if details:
             print(f"    -> Issue: {details}")
 
-# Helper specifically to split connection vs content checks
+# New Flexible Grader Function
+def award_points(description, max_points, points_earned, details=""):
+    global TOTAL_MARKS, SCORED_MARKS
+    TOTAL_MARKS += max_points
+    SCORED_MARKS += points_earned
+    
+    if points_earned == max_points:
+        print(f"[\u2713] PASS (+{points_earned}/{max_points}): {description}")
+    elif points_earned > 0:
+        print(f"[!] PARTIAL (+{points_earned}/{max_points}): {description}")
+        if details:
+            print(f"    -> Note: {details}")
+    else:
+        print(f"[X] FAIL (0/{max_points}): {description}")
+        if details:
+            print(f"    -> Issue: {details}")
+
 def check_website_detailed(url, keyword):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         req = urllib.request.Request(url, headers=headers)
-        
         with urllib.request.urlopen(req, timeout=3, context=ssl_context) as response:
             if response.status == 200:
                 content = response.read().decode('utf-8')
-                
-                # CLEAN UP: Remove spaces from both content and keyword for flexible matching
-                # This ensures "lowchoonkeat" matches "Low Choon Keat"
                 content_clean = content.lower().replace(" ", "")
                 keyword_clean = keyword.lower().replace(" ", "")
-
                 is_loaded = True
                 is_name_found = keyword_clean in content_clean
-                
                 return is_loaded, is_name_found, "Page loaded successfully"
             else:
                 return False, False, f"HTTP Status: {response.status}"
-    except urllib.error.HTTPError as e:
-        return False, False, f"HTTP Error: {e.code}"
-    except urllib.error.URLError as e:
-        return False, False, f"Connection Error: {e.reason}"
     except Exception as e:
         return False, False, str(e)
 
-# Standard helper for simple checks (used in ALB/S3 tasks)
-def check_http_content(url, keyword):
-    loaded, name_found, msg = check_website_detailed(url, keyword)
-    if not loaded: return False, msg
-    if not name_found: return False, f"Page loaded, but '{keyword}' not found"
-    return True, "Success"
-
 def main():
-    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V7)")
+    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V8 - PARTIAL MARKS)")
     
     session = boto3.session.Session()
     region = session.region_name
     print(f"Scanning Region: {region}")
     
-    student_name_input = input("Enter Student Full Name (as used in resource naming): ").strip().lower()
+    student_name_input = input("Enter Student Full Name: ").strip().lower()
     student_name_nospace = student_name_input.replace(" ", "")
-    print(f"Looking for resources containing: '{student_name_nospace}' or parts of it...")
+    print(f"Looking for resources containing: '{student_name_nospace}'...")
 
     ec2 = boto3.client('ec2')
     asg_client = boto3.client('autoscaling')
@@ -85,18 +90,14 @@ def main():
     # =========================================================
     print_header("Task 1: EC2 Web Server Deployment (25%)")
     
-    found_instance_id = None
     target_inst = None
-    
     try:
-        # 1. Check EC2 Instance Launched (5 Marks)
+        # 1. Check EC2 Instance (5 Marks)
         instances = ec2.describe_instances(Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
         all_instances = [i for r in instances['Reservations'] for i in r['Instances']]
         
         if all_instances:
-            # Pick primary candidate
             target_inst = all_instances[0] 
-            # Refine: Look for specific Name Tag if possible
             for inst in all_instances:
                 for tag in inst.get('Tags', []):
                     if tag['Key'] == 'Name' and student_name_nospace in tag['Value'].lower().replace(" ", ""):
@@ -104,57 +105,60 @@ def main():
                         break
         
         if target_inst:
-            found_instance_id = target_inst['InstanceId']
-            inst_name = "Unknown"
-            for tag in target_inst.get('Tags', []):
-                if tag['Key'] == 'Name': inst_name = tag['Value']
+            inst_name = next((tag['Value'] for tag in target_inst.get('Tags', []) if tag['Key'] == 'Name'), "Unknown")
+            award_points("EC2 Instance Launched & Running", 5, 5, f"ID: {target_inst['InstanceId']}")
             
-            grade_step("EC2 Instance Launched & Running", 5, True, f"ID: {found_instance_id} ({inst_name})")
-            
-            # 2. Check Instance Type (5 Marks)
+            # 2. Instance Type - PARTIAL LOGIC (5 Marks)
             itype = target_inst['InstanceType']
-            grade_step("Instance Type is t3.large", 5, itype == 't3.large', f"Found: {itype}")
+            if itype == 't3.large':
+                award_points("Instance Type (t3.large)", 5, 5)
+            elif itype in ['t3.medium', 't3.micro', 't2.micro']:
+                award_points("Instance Type (t3.large)", 5, 2, f"Wrong type used: {itype} (Awarded 2/5)")
+            else:
+                award_points("Instance Type (t3.large)", 5, 0, f"Incorrect type: {itype}")
             
-            # 3. Check Security Group - Port 80 & 22 (5 Marks)
+            # 3. Security Groups - PARTIAL LOGIC (5 Marks)
             sg_ids = [sg['GroupId'] for sg in target_inst.get('SecurityGroups', [])]
             has_ssh = False
             has_http = False
-            
             if sg_ids:
                 sgs = ec2.describe_security_groups(GroupIds=sg_ids)['SecurityGroups']
                 for sg in sgs:
                     for perm in sg.get('IpPermissions', []):
-                        from_port = perm.get('FromPort')
-                        to_port = perm.get('ToPort')
                         ip_proto = perm.get('IpProtocol')
                         if ip_proto == '-1':
-                            has_ssh = True
-                            has_http = True
-                        elif ip_proto == 'tcp' and from_port is not None and to_port is not None:
-                            if from_port <= 22 and to_port >= 22: has_ssh = True
-                            if from_port <= 80 and to_port >= 80: has_http = True
+                            has_ssh, has_http = True, True
+                        elif ip_proto == 'tcp':
+                            fp, tp = perm.get('FromPort'), perm.get('ToPort')
+                            if fp and tp:
+                                if fp <= 22 and tp >= 22: has_ssh = True
+                                if fp <= 80 and tp >= 80: has_http = True
             
-            grade_step("Security Group: Ports 22 & 80 Open", 5, (has_ssh and has_http), f"SSH:{has_ssh} HTTP:{has_http}")
+            if has_ssh and has_http:
+                award_points("Security Group: Ports 22 & 80", 5, 5)
+            elif has_ssh or has_http:
+                found = "SSH" if has_ssh else "HTTP"
+                award_points("Security Group: Ports 22 & 80", 5, 3, f"Only {found} open. Missing one port.")
+            else:
+                award_points("Security Group: Ports 22 & 80", 5, 0)
 
-            # 4. Check Web Access Split (5 Marks Load + 5 Marks Name)
+            # 4. Web Access (5 Marks) & Name (5 Marks)
             public_ip = target_inst.get('PublicIpAddress')
             if public_ip:
                 print(f"    Testing EC2 Public IP: http://{public_ip}")
                 is_loaded, is_name_found, msg = check_website_detailed(f"http://{public_ip}", student_name_input)
-                
-                grade_step("Website Accessible (HTTP 200)", 5, is_loaded, msg)
-                grade_step("Website Shows Student Name", 5, is_name_found, f"Name '{student_name_input}' not in HTML")
+                award_points("Website Accessible (HTTP 200)", 5, 5 if is_loaded else 0, msg)
+                award_points("Website Shows Student Name", 5, 5 if is_name_found else 0)
             else:
-                grade_step("Website Accessible (HTTP 200)", 5, False, "No Public IP")
-                grade_step("Website Shows Student Name", 5, False, "No Public IP")
-            
+                award_points("Website Accessible (HTTP 200)", 5, 0, "No Public IP")
+                award_points("Website Shows Student Name", 5, 0, "No Public IP")
         else:
-            grade_step("EC2 Instance Launched & Running", 5, False, "No running instances found.")
-            grade_step("Instance Type is t3.large", 5, False)
-            grade_step("Security Group: Ports 22 & 80 Open", 5, False)
-            grade_step("Website Accessible (HTTP 200)", 5, False)
-            grade_step("Website Shows Student Name", 5, False)
-
+            award_points("EC2 Instance Launched & Running", 5, 0, "No running instances found")
+            award_points("Instance Type (t3.large)", 5, 0)
+            award_points("Security Group: Ports 22 & 80", 5, 0)
+            award_points("Website Accessible (HTTP 200)", 5, 0)
+            award_points("Website Shows Student Name", 5, 0)
+            
     except Exception as e:
         print(f"Error Task 1: {e}")
 
@@ -164,175 +168,145 @@ def main():
     print_header("Task 2: Launch Template & ASG (25%)")
     
     try:
-        # 1. Launch Template Exists (5 Marks)
+        # 1. LT Found
         lts = ec2.describe_launch_templates()['LaunchTemplates']
         target_lt = next((lt for lt in lts if "lt-" in lt['LaunchTemplateName']), None)
-        lt_data = None
-        
         if target_lt:
-            grade_step("Launch Template Found (lt-*)", 5, True, f"Found: {target_lt['LaunchTemplateName']}")
+            award_points("Launch Template Found (lt-*)", 5, 5, target_lt['LaunchTemplateName'])
+            # 2. LT User Data
             lt_vers = ec2.describe_launch_template_versions(LaunchTemplateId=target_lt['LaunchTemplateId'], Versions=['$Latest'])
-            lt_data = lt_vers['LaunchTemplateVersions'][0]['LaunchTemplateData']
+            if 'UserData' in lt_vers['LaunchTemplateVersions'][0]['LaunchTemplateData']:
+                 award_points("LT includes User Data", 5, 5)
+            else:
+                 award_points("LT includes User Data", 5, 0)
         else:
-            grade_step("Launch Template Found (lt-*)", 5, False)
+            award_points("Launch Template Found (lt-*)", 5, 0)
+            award_points("LT includes User Data", 5, 0)
 
-        # 2. LT User Data (5 Marks)
-        if lt_data and 'UserData' in lt_data:
-             grade_step("LT includes User Data", 5, True)
-        else:
-             grade_step("LT includes User Data", 5, False)
-
-        # 3. ASG Exists & Linked (5 Marks)
+        # 3. ASG Found & Linked
         asgs = asg_client.describe_auto_scaling_groups()['AutoScalingGroups']
         target_asg = next((a for a in asgs if "asg-" in a['AutoScalingGroupName']), None)
-        
         if target_asg:
             lt_linked = False
             if 'LaunchTemplate' in target_asg and target_lt:
                 if target_asg['LaunchTemplate']['LaunchTemplateName'] == target_lt['LaunchTemplateName']:
                     lt_linked = True
+            award_points("ASG Created & Linked", 5, 5 if lt_linked else 0)
             
-            grade_step("ASG Created & Linked", 5, lt_linked, f"ASG: {target_asg['AutoScalingGroupName']}")
+            # 4. Scaling Config
+            c_min, c_max, c_des = target_asg['MinSize'], target_asg['MaxSize'], target_asg['DesiredCapacity']
+            if c_min == 1 and c_max == 3 and c_des == 1:
+                award_points("Scaling Config (1-3-1)", 5, 5)
+            else:
+                award_points("Scaling Config (1-3-1)", 5, 0, f"Found {c_min}-{c_max}-{c_des}")
             
-            # 4. ASG Scaling Config (5 Marks)
-            curr_min = target_asg['MinSize']
-            curr_max = target_asg['MaxSize']
-            curr_des = target_asg['DesiredCapacity']
-            is_config_ok = (curr_min == 1 and curr_max == 3 and curr_des == 1)
-            grade_step("Scaling Config (Min=1, Max=3, Des=1)", 5, is_config_ok, f"Found Min:{curr_min} Max:{curr_max} Des:{curr_des}")
-            
-            # 5. Instances Running in ASG (5 Marks)
-            instance_count = len(target_asg['Instances'])
-            grade_step("Instances Running via ASG", 5, instance_count >= 1, f"Count: {instance_count}")
-            
+            # 5. ASG Instances
+            if len(target_asg['Instances']) >= 1:
+                award_points("Instances Running via ASG", 5, 5)
+            else:
+                award_points("Instances Running via ASG", 5, 0)
         else:
-            grade_step("ASG Created & Linked", 5, False)
-            grade_step("Scaling Config (Min=1, Max=3, Des=1)", 5, False)
-            grade_step("Instances Running via ASG", 5, False)
+            award_points("ASG Created & Linked", 5, 0)
+            award_points("Scaling Config (1-3-1)", 5, 0)
+            award_points("Instances Running via ASG", 5, 0)
 
     except Exception as e:
         print(f"Error Task 2: {e}")
 
     # =========================================================
-    # TASK 3: LOAD BALANCER INTEGRATION (25 MARKS)
+    # TASK 3: LOAD BALANCER (25 MARKS)
     # =========================================================
     print_header("Task 3: Load Balancer (25%)")
-    
     alb_dns = None
-    target_tg_arn = None
-    
     try:
-        # 1. ALB Exists (5 Marks)
+        # 1. ALB Exists
         albs = elbv2.describe_load_balancers()['LoadBalancers']
         target_alb = next((alb for alb in albs if "alb-" in alb['LoadBalancerName']), None)
-        
         if target_alb:
-            grade_step("ALB Created & Internet-Facing", 5, target_alb['Scheme'] == 'internet-facing')
+            award_points("ALB Created & Internet-Facing", 5, 5 if target_alb['Scheme'] == 'internet-facing' else 0)
             alb_dns = target_alb['DNSName']
             alb_arn = target_alb['LoadBalancerArn']
             
-            # 2. ALB Listener (5 Marks)
+            # 2. Listener
             listeners = elbv2.describe_listeners(LoadBalancerArn=alb_arn)['Listeners']
-            has_http_80 = any(l['Port'] == 80 and l['Protocol'] == 'HTTP' for l in listeners)
-            grade_step("Listener Configured (HTTP:80)", 5, has_http_80)
-            
+            has_80 = any(l['Port'] == 80 and l['Protocol'] == 'HTTP' for l in listeners)
+            award_points("Listener Configured (HTTP:80)", 5, 5 if has_80 else 0)
         else:
-            grade_step("ALB Created & Internet-Facing", 5, False)
-            grade_step("Listener Configured (HTTP:80)", 5, False)
+            award_points("ALB Created & Internet-Facing", 5, 0)
+            award_points("Listener Configured (HTTP:80)", 5, 0)
 
-        # 3. Target Group Exists & Healthy (5 Marks)
+        # 3. Target Group
         tgs = elbv2.describe_target_groups()['TargetGroups']
         target_tg = next((tg for tg in tgs if "tg-" in tg['TargetGroupName']), None)
-        
         if target_tg:
-            target_tg_arn = target_tg['TargetGroupArn']
-            health = elbv2.describe_target_health(TargetGroupArn=target_tg_arn)
+            award_points("Target Group Exists", 5, 5)
+            # 4. Health Checks - PARTIAL LOGIC
+            health = elbv2.describe_target_health(TargetGroupArn=target_tg['TargetGroupArn'])
             healthy_count = sum(1 for t in health['TargetHealthDescriptions'] if t['TargetHealth']['State'] == 'healthy')
-            
-            grade_step("Target Group Exists", 5, True)
-            
-            # 4. Health Checks / Healthy Instances (5 Marks)
-            grade_step("Targets Registered & Healthy", 5, healthy_count >= 1, f"Healthy Hosts: {healthy_count}")
+            if healthy_count >= 1:
+                award_points("Targets Registered & Healthy", 5, 5)
+            else:
+                # Partial mark for creating TG but failing health checks
+                award_points("Targets Registered & Healthy", 5, 2, "TG exists but instances unhealthy")
         else:
-            grade_step("Target Group Exists", 5, False)
-            grade_step("Targets Registered & Healthy", 5, False)
+            award_points("Target Group Exists", 5, 0)
+            award_points("Targets Registered & Healthy", 5, 0)
 
-        # 5. DNS Access (5 Marks)
+        # 5. DNS Access
         if alb_dns:
             print(f"    Testing ALB: http://{alb_dns}")
-            success, msg = check_http_content(f"http://{alb_dns}", student_name_input)
-            grade_step("ALB DNS Access & Name Verify", 5, success, msg)
+            is_loaded, is_name_found, msg = check_website_detailed(f"http://{alb_dns}", student_name_input)
+            award_points("ALB DNS Access & Name Verify", 5, 5 if is_name_found else 0, msg)
         else:
-            grade_step("ALB DNS Access & Name Verify", 5, False, "No ALB DNS found")
-
+            award_points("ALB DNS Access & Name Verify", 5, 0)
+            
     except Exception as e:
         print(f"Error Task 3: {e}")
 
     # =========================================================
-    # TASK 4: S3 STATIC WEBSITE HOSTING (25 MARKS)
+    # TASK 4: S3 (25 MARKS)
     # =========================================================
     print_header("Task 4: S3 Static Website (25%)")
-    
-    target_bucket_name = None
     try:
-        # 1. Bucket Exists (5 Marks)
         buckets = s3.list_buckets()['Buckets']
         target_bucket = next((b for b in buckets if "s3-" in b['Name']), None)
-        
         if target_bucket:
-            target_bucket_name = target_bucket['Name']
-            grade_step("Bucket Created (s3-*)", 5, True, f"Bucket: {target_bucket_name}")
+            bname = target_bucket['Name']
+            award_points("Bucket Created (s3-*)", 5, 5, bname)
             
-            # 2. Static Hosting Enabled (5 Marks)
-            hosting_enabled = False
             try:
-                s3.get_bucket_website(Bucket=target_bucket_name)
-                hosting_enabled = True
+                s3.get_bucket_website(Bucket=bname)
+                award_points("Static Hosting Enabled", 5, 5)
             except:
-                pass
-            grade_step("Static Hosting Enabled", 5, hosting_enabled)
-            
-            # 3. index.html Uploaded (5 Marks)
-            has_index = False
+                award_points("Static Hosting Enabled", 5, 0)
+                
             try:
-                s3.head_object(Bucket=target_bucket_name, Key='index.html')
-                has_index = True
+                s3.head_object(Bucket=bname, Key='index.html')
+                award_points("index.html Uploaded", 5, 5)
             except:
-                pass
-            grade_step("index.html Uploaded", 5, has_index)
+                award_points("index.html Uploaded", 5, 0)
+                
+            try:
+                pol = s3.get_bucket_policy(Bucket=bname)
+                award_points("Bucket Policy Configured", 5, 5 if "Allow" in pol['Policy'] else 0)
+            except:
+                award_points("Bucket Policy Configured", 5, 0)
 
-            # 4. Public Access / Policy (5 Marks)
-            has_policy = False
-            try:
-                pol = s3.get_bucket_policy(Bucket=target_bucket_name)
-                if "Allow" in pol['Policy']: has_policy = True
-            except:
-                pass
-            grade_step("Bucket Policy Configured", 5, has_policy)
-
-            # 5. Website Verification (5 Marks)
-            s3_url = f"http://{target_bucket_name}.s3-website-{region}.amazonaws.com"
+            s3_url = f"http://{bname}.s3-website-{region}.amazonaws.com"
             print(f"    Testing S3: {s3_url}")
-            success, msg = check_http_content(s3_url, student_name_input)
-            grade_step("Website Verified in Browser", 5, success, msg)
-            
+            is_loaded, is_name_found, msg = check_website_detailed(s3_url, student_name_input)
+            award_points("Website Verified in Browser", 5, 5 if is_name_found else 0, msg)
         else:
-            grade_step("Bucket Created (s3-*)", 5, False)
-            grade_step("Static Hosting Enabled", 5, False)
-            grade_step("index.html Uploaded", 5, False)
-            grade_step("Bucket Policy Configured", 5, False)
-            grade_step("Website Verified in Browser", 5, False)
-
+            award_points("Bucket Created (s3-*)", 5, 0)
+            award_points("Static Hosting Enabled", 5, 0)
+            award_points("index.html Uploaded", 5, 0)
+            award_points("Bucket Policy Configured", 5, 0)
+            award_points("Website Verified in Browser", 5, 0)
     except Exception as e:
         print(f"Error Task 4: {e}")
 
-    # =========================================================
-    # SUMMARY
-    # =========================================================
     print_header("FINAL RESULT")
     print(f"TOTAL SCORE: {SCORED_MARKS} / 100")
-    if SCORED_MARKS == 100:
-        print("PERFECT SCORE! \u2B50")
 
 if __name__ == "__main__":
     main()

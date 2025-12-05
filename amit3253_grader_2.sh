@@ -38,11 +38,14 @@ def check_website_detailed(url, keyword):
         with urllib.request.urlopen(req, timeout=3, context=ssl_context) as response:
             if response.status == 200:
                 content = response.read().decode('utf-8')
-                # Check 1: Did it load? YES
-                is_loaded = True
                 
-                # Check 2: Is name there?
-                is_name_found = keyword.lower() in content.lower()
+                # CLEAN UP: Remove spaces from both content and keyword for flexible matching
+                # This ensures "lowchoonkeat" matches "Low Choon Keat"
+                content_clean = content.lower().replace(" ", "")
+                keyword_clean = keyword.lower().replace(" ", "")
+
+                is_loaded = True
+                is_name_found = keyword_clean in content_clean
                 
                 return is_loaded, is_name_found, "Page loaded successfully"
             else:
@@ -62,7 +65,7 @@ def check_http_content(url, keyword):
     return True, "Success"
 
 def main():
-    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V6)")
+    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V7)")
     
     session = boto3.session.Session()
     region = session.region_name
@@ -86,12 +89,14 @@ def main():
     target_inst = None
     
     try:
-        # 1. Check EC2 Instance Launched (5 Marks) - REDUCED FROM 10
+        # 1. Check EC2 Instance Launched (5 Marks)
         instances = ec2.describe_instances(Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
         all_instances = [i for r in instances['Reservations'] for i in r['Instances']]
         
         if all_instances:
+            # Pick primary candidate
             target_inst = all_instances[0] 
+            # Refine: Look for specific Name Tag if possible
             for inst in all_instances:
                 for tag in inst.get('Tags', []):
                     if tag['Key'] == 'Name' and student_name_nospace in tag['Value'].lower().replace(" ", ""):
@@ -131,7 +136,7 @@ def main():
             
             grade_step("Security Group: Ports 22 & 80 Open", 5, (has_ssh and has_http), f"SSH:{has_ssh} HTTP:{has_http}")
 
-            # 4. Check Web Access Split (5 Marks Load + 5 Marks Name) - NEW LOGIC
+            # 4. Check Web Access Split (5 Marks Load + 5 Marks Name)
             public_ip = target_inst.get('PublicIpAddress')
             if public_ip:
                 print(f"    Testing EC2 Public IP: http://{public_ip}")

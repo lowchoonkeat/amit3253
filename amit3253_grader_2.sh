@@ -1,285 +1,253 @@
-import boto3
-import sys
-import urllib.request
-import ssl
+#!/bin/bash
 
-# --- CONFIGURATION ---
-ssl_context = ssl._create_unverified_context()
+# ============================================================
+# AMIT3253 CLOUD COMPUTING FOR BUSINESS - AUTO GRADER
+# ACADEMIC YEAR 2025/2026
+# ============================================================
 
-# Global Score Keepers
-TOTAL_MARKS = 0
-SCORED_MARKS = 0
+# Colors for output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-def print_header(title):
-    print(f"\n{'='*60}")
-    print(f" {title}")
-    print(f"{'='*60}")
+# Score Variables
+TOTAL_SCORE=0
+MAX_SCORE=100
 
-def grade_step(description, points, condition, details=""):
-    global TOTAL_MARKS, SCORED_MARKS
-    TOTAL_MARKS += points
-    if condition:
-        SCORED_MARKS += points
-        print(f"[\u2713] PASS (+{points}): {description}")
-    else:
-        print(f"[X] FAIL (0/{points}): {description}")
-        if details:
-            print(f"    -> Issue: {details}")
+# Helper function to print results
+print_result() {
+    local task_name=$1
+    local marks=$2
+    local max_marks=$3
+    local status=$4
+    local message=$5
 
-def check_http_content(url, keyword):
-    try:
-        with urllib.request.urlopen(url, timeout=5, context=ssl_context) as response:
-            if response.status == 200:
-                content = response.read().decode('utf-8')
-                if keyword.lower() in content.lower():
-                    return True, "Content matched"
-                else:
-                    return True, "Page loads, but student name not found"
-    except Exception as e:
-        return False, str(e)
-    return False, "Unknown error"
+    if [ "$status" == "PASS" ]; then
+        echo -e "${GREEN}[PASS] (+${marks}/${max_marks}) ${task_name}: ${message}${NC}"
+        TOTAL_SCORE=$((TOTAL_SCORE + marks))
+    elif [ "$status" == "PARTIAL" ]; then
+        echo -e "${YELLOW}[PARTIAL] (+${marks}/${max_marks}) ${task_name}: ${message}${NC}"
+        TOTAL_SCORE=$((TOTAL_SCORE + marks))
+    else
+        echo -e "${RED}[FAIL] (0/${max_marks}) ${task_name}: ${message}${NC}"
+    fi
+}
 
-def main():
-    print_header("BMIT3273 CLOUD COMPUTING - AUTO GRADER (FINAL v9)")
+echo -e "${BLUE}============================================================"
+echo -e " STARTING ASSESSMENT GRADING"
+echo -e " Student AWS Region: $(aws configure get region)"
+echo -e "============================================================${NC}"
+
+# ============================================================
+# TASK 1: EC2 Web Server Deployment (25 Marks)
+# ============================================================
+echo -e "\n${BLUE}--- TASK 1: EC2 Web Server Deployment ---${NC}"
+
+# 1. Check if ANY instance exists and is running (ignoring naming for a moment to find ID)
+INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=instance-state-name,Values=running" --query "Reservations[].Instances[].InstanceId" --output text | awk '{print $1}')
+
+if [ -z "$INSTANCE_ID" ]; then
+    print_result "EC2 Instance" 0 10 "FAIL" "No running instances found."
+else
+    # Check Name Tag
+    INST_NAME=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=Name" --query "Tags[0].Value" --output text)
+    print_result "EC2 Instance" 10 10 "PASS" "Instance found ($INSTANCE_ID). Name: $INST_NAME"
     
-    session = boto3.session.Session()
-    region = session.region_name
-    print(f"Scanning Region: {region}")
+    # 2. Check Instance Type (t3.large)
+    INST_TYPE=$(aws ec2 describe-instances --instance-ids $INSTANCE_ID --query "Reservations[0].Instances[0].InstanceType" --output text)
+    if [ "$INST_TYPE" == "t3.large" ]; then
+        print_result "Instance Type" 5 5 "PASS" "Correct type: t3.large"
+    else
+        print_result "Instance Type" 0 5 "FAIL" "Incorrect type: $INST_TYPE (Required: t3.large)"
+    fi
+
+    # 3. Check User Data (Presence only, difficult to parse content via API)
+    USER_DATA=$(aws ec2 describe-instance-attribute --instance-id $INSTANCE_ID --attribute userData --query "UserData.Value" --output text)
+    if [ "$USER_DATA" != "None" ]; then
+        print_result "User Data" 10 10 "PASS" "User Data script detected."
+    else
+        print_result "User Data" 0 10 "FAIL" "No User Data found."
+    fi
+fi
+
+# ============================================================
+# TASK 2: Launch Template & Auto Scaling Group (25 Marks)
+# ============================================================
+echo -e "\n${BLUE}--- TASK 2: Launch Template & ASG ---${NC}"
+
+# 1. Check Launch Template (Name must start with lt-)
+LT_NAME=$(aws ec2 describe-launch-templates --query "LaunchTemplates[?starts_with(LaunchTemplateName, 'lt-')].LaunchTemplateName" --output text | awk '{print $1}')
+
+if [ ! -z "$LT_NAME" ]; then
+    print_result "Launch Template" 5 5 "PASS" "Found template: $LT_NAME"
     
-    student_name_input = input("Enter Student Full Name (as used in resource naming): ").strip().lower()
-    student_name_nospace = student_name_input.replace(" ", "")
-    print(f"Looking for resources containing: '{student_name_nospace}' or parts of it...")
-
-    ec2 = boto3.client('ec2')
-    asg_client = boto3.client('autoscaling')
-    elbv2 = boto3.client('elbv2')
-    s3 = boto3.client('s3')
-    rds = boto3.client('rds')
-
-    # =========================================================
-    # TASK 1: EC2 & SECURITY (25 MARKS)
-    # =========================================================
-    print_header("Task 1: EC2 & Security")
+    # Check User Data in LT
+    LT_ID=$(aws ec2 describe-launch-templates --launch-template-names $LT_NAME --query "LaunchTemplates[0].LaunchTemplateId" --output text)
+    LT_USERDATA=$(aws ec2 describe-launch-template-versions --launch-template-id $LT_ID --versions "\$Latest" --query "LaunchTemplateVersions[0].LaunchTemplateData.UserData" --output text)
     
-    try:
-        lts = ec2.describe_launch_templates()['LaunchTemplates']
-        target_lt = next((lt for lt in lts if "lt-" in lt['LaunchTemplateName']), None)
-        lt_ver = None
-        
-        if target_lt:
-            grade_step("Launch Template Found", 5, True)
-            lt_id = target_lt['LaunchTemplateId']
-            lt_ver = ec2.describe_launch_template_versions(LaunchTemplateId=lt_id)['LaunchTemplateVersions'][0]
-        else:
-            grade_step("Launch Template Found", 5, False, "Missing 'lt-*'")
+    if [ "$LT_USERDATA" != "None" ] && [ ! -z "$LT_USERDATA" ]; then
+        print_result "LT User Data" 5 5 "PASS" "Script included in Template."
+    else
+        print_result "LT User Data" 0 5 "FAIL" "User Data missing in Template."
+    fi
 
-        if lt_ver:
-            itype = lt_ver['LaunchTemplateData'].get('InstanceType', 'Unknown')
-            grade_step("Instance Type is t3.medium", 5, itype == 't3.medium', f"Found: {itype}")
-            
-            # UPDATED: User Data is now only 5 Marks
-            has_ud = 'UserData' in lt_ver['LaunchTemplateData']
-            grade_step("User Data Script Configured", 5, has_ud)
-        else:
-            grade_step("Instance Type is t3.medium", 5, False, "No LT to check")
-            grade_step("User Data Script Configured", 5, False)
+else
+    print_result "Launch Template" 0 5 "FAIL" "No Launch Template starting with 'lt-' found."
+    print_result "LT User Data" 0 5 "FAIL" "Skipped (No LT)."
+fi
 
-        # UPDATED: Security Group is now 10 Marks (5 + 5)
-        sgs = ec2.describe_security_groups()['SecurityGroups']
-        web_sg = next((sg for sg in sgs if sg['GroupName'] == 'web-access'), None)
-        
-        if web_sg:
-            perms = web_sg['IpPermissions']
-            has_ssh = False
-            has_http = False
-            for p in perms:
-                if p.get('FromPort') == 22 or p.get('IpProtocol') == '-1': has_ssh = True
-                if p.get('FromPort') == 80 or p.get('IpProtocol') == '-1': has_http = True
-            
-            grade_step("SG: Port 22 (SSH) Open", 5, has_ssh)
-            grade_step("SG: Port 80 (HTTP) Open", 5, has_http)
-        else:
-            grade_step("SG: Port 22 (SSH) Open", 5, False, "SG 'web-access' missing")
-            grade_step("SG: Port 80 (HTTP) Open", 5, False, "SG 'web-access' missing")
+# 2. Check Auto Scaling Group (Name must start with asg-)
+ASG_NAME=$(aws autoscaling describe-auto-scaling-groups --query "AutoScalingGroups[?starts_with(AutoScalingGroupName, 'asg-')].AutoScalingGroupName" --output text | awk '{print $1}')
 
-    except Exception as e:
-        print(f"Error Task 1: {e}")
+if [ ! -z "$ASG_NAME" ]; then
+    print_result "ASG Exists" 5 5 "PASS" "Found ASG: $ASG_NAME"
 
-    # =========================================================
-    # TASK 2: ASG & ALB (25 MARKS)
-    # =========================================================
-    print_header("Task 2: ASG & ALB")
+    # 3. Check Scaling Config (Min=1, Max=3, Desired=1)
+    # Using jq for parsing JSON output from AWS CLI
+    ASG_CONFIG=$(aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names $ASG_NAME)
+    MIN_SIZE=$(echo $ASG_CONFIG | jq -r '.AutoScalingGroups[0].MinSize')
+    MAX_SIZE=$(echo $ASG_CONFIG | jq -r '.AutoScalingGroups[0].MaxSize')
+    DES_CAP=$(echo $ASG_CONFIG | jq -r '.AutoScalingGroups[0].DesiredCapacity')
+
+    if [ "$MIN_SIZE" == "1" ] && [ "$MAX_SIZE" == "3" ] && [ "$DES_CAP" == "1" ]; then
+        print_result "ASG Scaling" 5 5 "PASS" "Min:1, Max:3, Desired:1"
+    else
+        print_result "ASG Scaling" 0 5 "FAIL" "Incorrect Config (Found Min:$MIN_SIZE, Max:$MAX_SIZE, Desired:$DES_CAP)"
+    fi
+
+    # 4. Check Instances Launched via ASG
+    ASG_INSTANCES=$(echo $ASG_CONFIG | jq -r '.AutoScalingGroups[0].Instances | length')
+    if [ "$ASG_INSTANCES" -ge 1 ]; then
+        print_result "ASG Instances" 5 5 "PASS" "ASG has $ASG_INSTANCES running instance(s)."
+    else
+        print_result "ASG Instances" 0 5 "FAIL" "ASG has 0 instances."
+    fi
+
+else
+    print_result "ASG Exists" 0 5 "FAIL" "No ASG starting with 'asg-' found."
+    print_result "ASG Scaling" 0 5 "FAIL" "Skipped."
+    print_result "ASG Instances" 0 5 "FAIL" "Skipped."
+fi
+
+# ============================================================
+# TASK 3: Load Balancer Integration (25 Marks)
+# ============================================================
+echo -e "\n${BLUE}--- TASK 3: Load Balancer ---${NC}"
+
+# 1. Check ALB (Name starts with alb-)
+ALB_ARN=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?starts_with(LoadBalancerName, 'alb-')].LoadBalancerArn" --output text | awk '{print $1}')
+ALB_DNS=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?starts_with(LoadBalancerName, 'alb-')].DNSName" --output text | awk '{print $1}')
+
+if [ ! -z "$ALB_ARN" ]; then
+    print_result "ALB Exists" 5 5 "PASS" "ALB Found."
+
+    # 2. Check Listener (Port 80)
+    LISTENER_CHECK=$(aws elbv2 describe-listeners --load-balancer-arn $ALB_ARN --query "Listeners[?Port==\`80\` && Protocol==\`HTTP\`].ListenerArn" --output text)
+    if [ ! -z "$LISTENER_CHECK" ]; then
+        print_result "ALB Listener" 5 5 "PASS" "HTTP Port 80 Listener configured."
+    else
+        print_result "ALB Listener" 0 5 "FAIL" "Missing HTTP Port 80 listener."
+    fi
+
+    # 3. Check Target Group
+    TG_ARN=$(aws elbv2 describe-target-groups --query "TargetGroups[?starts_with(TargetGroupName, 'tg-')].TargetGroupArn" --output text | awk '{print $1}')
     
-    alb_dns = None
-    try:
-        # ALB (5 Marks)
-        albs = elbv2.describe_load_balancers()['LoadBalancers']
-        target_alb = next((alb for alb in albs if "alb-" in alb['LoadBalancerName']), None)
+    if [ ! -z "$TG_ARN" ]; then
+        # Check Health
+        HEALTHY_COUNT=$(aws elbv2 describe-target-health --target-group-arn $TG_ARN --query "TargetHealthDescriptions[?TargetHealth.State=='healthy'] | length" --output text)
         
-        if target_alb:
-            grade_step("ALB Created", 2, True)
-            grade_step("ALB Internet-Facing", 3, target_alb['Scheme'] == 'internet-facing')
-            alb_dns = target_alb['DNSName']
-        else:
-            grade_step("ALB Created", 2, False)
-            grade_step("ALB Internet-Facing", 3, False)
+        if [ "$HEALTHY_COUNT" -ge 1 ]; then
+            print_result "Target Group" 5 5 "PASS" "TG Found and $HEALTHY_COUNT instance(s) healthy."
+            print_result "Health Checks" 5 5 "PASS" "Health checks passing."
+        else
+            print_result "Target Group" 3 5 "PARTIAL" "TG exists but NO healthy instances."
+            print_result "Health Checks" 0 5 "FAIL" "Instances are unhealthy or not registered."
+        fi
+    else
+        print_result "Target Group" 0 5 "FAIL" "No Target Group starting with 'tg-' found."
+        print_result "Health Checks" 0 5 "FAIL" "Skipped."
+    fi
 
-        # Target Group (5 Marks)
-        tgs = elbv2.describe_target_groups()['TargetGroups']
-        target_tg = next((tg for tg in tgs if "tg-" in tg['TargetGroupName']), None)
-        
-        if target_tg:
-            grade_step("Target Group Created", 2, True)
-            health = elbv2.describe_target_health(TargetGroupArn=target_tg['TargetGroupArn'])
-            has_healthy = any(t['TargetHealth']['State'] == 'healthy' for t in health['TargetHealthDescriptions'])
-            grade_step("Targets Registered & Healthy", 3, has_healthy)
-        else:
-            grade_step("Target Group Created", 2, False)
-            grade_step("Targets Registered & Healthy", 3, False)
+    # 4. Check DNS Access (Curl)
+    if [ ! -z "$ALB_DNS" ]; then
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://$ALB_DNS)
+        if [ "$HTTP_CODE" == "200" ]; then
+            print_result "ALB DNS Access" 5 5 "PASS" "Website accessible via ALB (HTTP 200)."
+        else
+            print_result "ALB DNS Access" 0 5 "FAIL" "Website not accessible (HTTP $HTTP_CODE)."
+        fi
+    else
+        print_result "ALB DNS Access" 0 5 "FAIL" "Skipped (No DNS)."
+    fi
 
-        # ASG (10 MARKS)
-        asgs = asg_client.describe_auto_scaling_groups()['AutoScalingGroups']
-        target_asg = next((a for a in asgs if "asg-" in a['AutoScalingGroupName']), None)
-        
-        if target_asg:
-            grade_step("ASG Created", 5, True)
-            is_config_ok = (target_asg['MinSize']==1 and target_asg['MaxSize']==4)
-            grade_step("Scaling Config (1-2-4)", 5, is_config_ok, f"Found Min:{target_asg['MinSize']} Max:{target_asg['MaxSize']}")
-        else:
-            grade_step("ASG Created", 5, False)
-            grade_step("Scaling Config (1-2-4)", 5, False)
+else
+    print_result "ALB Exists" 0 5 "FAIL" "No ALB starting with 'alb-' found."
+    print_result "ALB Listener" 0 5 "FAIL" "Skipped."
+    print_result "Target Group" 0 5 "FAIL" "Skipped."
+    print_result "Health Checks" 0 5 "FAIL" "Skipped."
+    print_result "ALB DNS Access" 0 5 "FAIL" "Skipped."
+fi
 
-        # Web Access (5 Marks)
-        if alb_dns:
-            print(f"    Testing ALB: http://{alb_dns}")
-            success, msg = check_http_content(f"http://{alb_dns}", student_name_input)
-            grade_step("Web Page Accessible via ALB", 5, success, msg)
-        else:
-            grade_step("Web Page Accessible via ALB", 5, False)
+# ============================================================
+# TASK 4: S3 Static Website Hosting (25 Marks)
+# ============================================================
+echo -e "\n${BLUE}--- TASK 4: S3 Static Website ---${NC}"
 
-    except Exception as e:
-        print(f"Error Task 2: {e}")
+# 1. Find Bucket (Name starts with s3-)
+BUCKET_NAME=$(aws s3api list-buckets --query "Buckets[?starts_with(Name, 's3-')].Name" --output text | awk '{print $1}')
 
-    # =========================================================
-    # TASK 3: S3 (25 MARKS)
-    # =========================================================
-    print_header("Task 3: S3 Static Website")
-    target_bucket_name = None
-    try:
-        buckets = s3.list_buckets()['Buckets']
-        target_bucket = next((b for b in buckets if "s3-" in b['Name']), None)
-        
-        if target_bucket:
-            target_bucket_name = target_bucket['Name']
-            grade_step("Bucket Created", 5, True)
-            
-            try:
-                s3.get_bucket_website(Bucket=target_bucket_name)
-                grade_step("Static Hosting Enabled", 5, True)
-            except:
-                grade_step("Static Hosting Enabled", 5, False)
-            
-            try:
-                objs = s3.list_objects_v2(Bucket=target_bucket_name)
-                files = [o['Key'] for o in objs.get('Contents', [])]
-                grade_step("File: index.html found", 2, 'index.html' in files)
-                grade_step("File: error.html found", 3, 'error.html' in files)
-            except:
-                 grade_step("File: index.html found", 2, False)
-                 grade_step("File: error.html found", 3, False)
+if [ ! -z "$BUCKET_NAME" ]; then
+    print_result "S3 Bucket" 5 5 "PASS" "Bucket found: $BUCKET_NAME"
 
-            try:
-                pol = s3.get_bucket_policy(Bucket=target_bucket_name)
-                grade_step("Bucket Policy (Public)", 5, "Allow" in pol['Policy'])
-            except:
-                grade_step("Bucket Policy (Public)", 5, False)
+    # 2. Check Static Website Config
+    WEBSITE_CONFIG=$(aws s3api get-bucket-website --bucket $BUCKET_NAME 2>/dev/null)
+    if [ $? -eq 0 ]; then
+        print_result "Static Hosting" 5 5 "PASS" "Static website hosting enabled."
+    else
+        print_result "Static Hosting" 0 5 "FAIL" "Static hosting NOT enabled."
+    fi
 
-            s3_url = f"http://{target_bucket_name}.s3-website-{region}.amazonaws.com"
-            success, msg = check_http_content(s3_url, student_name_input)
-            grade_step("Website Verified in Browser", 5, success, msg)
-        else:
-            grade_step("Bucket Created", 5, False)
-            grade_step("Static Hosting Enabled", 5, False)
-            grade_step("File: index.html found", 2, False)
-            grade_step("File: error.html found", 3, False)
-            grade_step("Bucket Policy (Public)", 5, False)
-            grade_step("Website Verified in Browser", 5, False)
+    # 3. Check index.html existence
+    INDEX_EXISTS=$(aws s3api head-object --bucket $BUCKET_NAME --key index.html 2>/dev/null)
+    if [ $? -eq 0 ]; then
+        print_result "index.html" 5 5 "PASS" "index.html uploaded."
+    else
+        print_result "index.html" 0 5 "FAIL" "index.html missing."
+    fi
 
-    except Exception as e:
-        print(f"Error Task 3: {e}")
+    # 4. Check Public Access (via Curl)
+    # Construct endpoint (Simplified for us-east-1, learner lab default usually)
+    REGION=$(aws configure get region)
+    if [ "$REGION" == "us-east-1" ]; then
+        S3_URL="http://${BUCKET_NAME}.s3-website-us-east-1.amazonaws.com"
+    else
+        S3_URL="http://${BUCKET_NAME}.s3-website-${REGION}.amazonaws.com"
+    fi
 
-    # =========================================================
-    # TASK 4: RDS (25 MARKS)
-    # =========================================================
-    print_header("Task 4: RDS & Evidence")
-    try:
-        dbs = rds.describe_db_instances()['DBInstances']
-        
-        target_rds = next((d for d in dbs if "rds-" in d['DBInstanceIdentifier']), None)
-        using_default = False
-        if not target_rds:
-            target_rds = next((d for d in dbs if d['DBInstanceIdentifier'] == "database-1"), None)
-            if target_rds: using_default = True
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" $S3_URL)
+    
+    if [ "$HTTP_CODE" == "200" ]; then
+        print_result "Public Access" 5 5 "PASS" "File accessible publicly."
+        print_result "Website Verify" 5 5 "PASS" "Browser Verification Successful (HTTP 200)."
+    elif [ "$HTTP_CODE" == "403" ]; then
+        print_result "Public Access" 0 5 "FAIL" "Access Denied (HTTP 403). Check Bucket Policy/Block Public Access."
+        print_result "Website Verify" 0 5 "FAIL" "Page not accessible."
+    else
+        print_result "Public Access" 0 5 "FAIL" "Error accessing site (HTTP $HTTP_CODE)."
+        print_result "Website Verify" 0 5 "FAIL" "Page not accessible."
+    fi
 
-        if target_rds:
-            grade_step("RDS Name Correct", 1, not using_default, "Used 'database-1'")
-            
-            inst_type = target_rds['DBInstanceClass']
-            storage = target_rds['AllocatedStorage']
-            grade_step("RDS Specs (t4g.micro/30GB)", 2, (inst_type == 'db.t4g.micro' and storage == 30), f"Found {inst_type}/{storage}GB")
-            
-            db_name = target_rds.get('DBName', '')
-            grade_step("Initial DB 'firstdb'", 2, db_name == 'firstdb', f"Found '{db_name}'")
+else
+    print_result "S3 Bucket" 0 5 "FAIL" "No bucket starting with 's3-' found."
+    print_result "Static Hosting" 0 5 "FAIL" "Skipped."
+    print_result "index.html" 0 5 "FAIL" "Skipped."
+    print_result "Public Access" 0 5 "FAIL" "Skipped."
+    print_result "Website Verify" 0 5 "FAIL" "Skipped."
+fi
 
-            vpc_sgs = target_rds['VpcSecurityGroups']
-            has_3306 = False
-            is_secure = False
-            if vpc_sgs:
-                sg_id = vpc_sgs[0]['VpcSecurityGroupId']
-                sg_resp = ec2.describe_security_groups(GroupIds=[sg_id])
-                perms = sg_resp['SecurityGroups'][0]['IpPermissions']
-                for p in perms:
-                    if p.get('FromPort') == 3306 or p.get('IpProtocol') == '-1':
-                        has_3306 = True
-                        is_public = any(r.get('CidrIp') == '0.0.0.0/0' for r in p.get('IpRanges', []))
-                        if not is_public: is_secure = True
-            
-            grade_step("RDS SG: Port 3306 Open", 2, has_3306)
-            grade_step("RDS SG: No Public Access (0.0.0.0)", 3, is_secure and has_3306)
-
-            print("    Checking S3 for evidence file...")
-            file_found = False
-            has_first = False
-            has_test = False
-            if target_bucket_name:
-                try:
-                    file_obj = s3.get_object(Bucket=target_bucket_name, Key='db_results.txt')
-                    content = file_obj['Body'].read().decode('utf-8')
-                    file_found = True
-                    if "firstdb" in content: has_first = True
-                    if "testdb" in content: has_test = True
-                except:
-                    pass
-            
-            grade_step("Evidence File Found in S3", 5, file_found)
-            grade_step("Evidence: Connection ('firstdb' listed)", 5, has_first)
-            grade_step("Evidence: Manual Task ('testdb' listed)", 5, has_test)
-
-        else:
-            grade_step("RDS Name Correct", 1, False)
-            grade_step("RDS Specs (t4g.micro/30GB)", 2, False)
-            grade_step("Initial DB 'firstdb'", 2, False)
-            grade_step("RDS SG: Port 3306 Open", 2, False)
-            grade_step("RDS SG: No Public Access", 3, False)
-            grade_step("Evidence File Found in S3", 5, False)
-            grade_step("Evidence: Connection", 5, False)
-            grade_step("Evidence: Manual Task", 5, False)
-
-    except Exception as e:
-        print(f"Error Task 4: {e}")
-
-    print_header("FINAL RESULT")
-    print(f"TOTAL SCORE: {SCORED_MARKS} / 100")
-
-if __name__ == "__main__":
-    main()
+echo -e "${BLUE}============================================================"
+echo -e " FINAL CALCULATED SCORE: ${TOTAL_SCORE} / ${MAX_SCORE}"
+echo -e " NOTE: Please verify screenshots for 'Student Name' validation."
+echo -e "============================================================${NC}"

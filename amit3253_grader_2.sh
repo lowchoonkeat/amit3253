@@ -2,7 +2,6 @@
 
 # ============================================================
 # AMIT3253 CLOUD COMPUTING FOR BUSINESS - AUTO GRADER
-# ACADEMIC YEAR 2025/2026
 # ============================================================
 
 # Colors for output

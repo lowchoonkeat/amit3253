@@ -43,8 +43,9 @@ def check_http_content(url, keyword):
                 if keyword.lower() in content.lower():
                     return True, "Content matched (Student Name found)"
                 else:
-                    # FIX: Returns False if name is missing
-                    return False, "Page loads, but Student Name NOT found in HTML"
+                    # --- CRITICAL FIX IN V5 ---
+                    # Strictly return False if name is missing
+                    return False, f"Page loads, but name '{keyword}' NOT found."
             else:
                 return False, f"HTTP Status: {response.status}"
     except urllib.error.HTTPError as e:
@@ -55,7 +56,7 @@ def check_http_content(url, keyword):
         return False, str(e)
 
 def main():
-    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V4)")
+    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V5)")
     
     session = boto3.session.Session()
     region = session.region_name

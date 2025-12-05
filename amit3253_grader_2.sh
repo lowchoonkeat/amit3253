@@ -52,7 +52,7 @@ def check_http_content(url, keyword):
         return False, str(e)
 
 def main():
-    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (PYTHON VERSION)")
+    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V2)")
     
     session = boto3.session.Session()
     region = session.region_name
@@ -73,21 +73,16 @@ def main():
     print_header("Task 1: EC2 Web Server Deployment (25%)")
     
     found_instance_id = None
+    target_inst = None
     
     try:
         # 1. Check EC2 Instance Launched (10 Marks)
-        # We look for running instances first
         instances = ec2.describe_instances(Filters=[{'Name': 'instance-state-name', 'Values': ['running']}])
-        target_inst = None
-        
-        # Flatten the list of instances
         all_instances = [i for r in instances['Reservations'] for i in r['Instances']]
         
-        # Try to find one with a Name tag containing student info
         if all_instances:
-            # Pick the first running one as primary candidate if specific name match fails
+            # Pick primary candidate
             target_inst = all_instances[0] 
-            
             # Refine: Look for specific Name Tag if possible
             for inst in all_instances:
                 for tag in inst.get('Tags', []):
@@ -103,21 +98,44 @@ def main():
             
             grade_step("EC2 Instance Launched & Running", 10, True, f"ID: {found_instance_id} ({inst_name})")
             
-            # 2. Check Instance Type (5 Marks) - MUST BE t3.large
+            # 2. Check Instance Type (5 Marks)
             itype = target_inst['InstanceType']
             grade_step("Instance Type is t3.large", 5, itype == 't3.large', f"Found: {itype}")
             
-            # 3. Check User Data (10 Marks)
-            # We check if the attribute exists. We can't easily see if it ran successfully without SSH,
-            # but we can check if it was configured.
+            # 3. Check User Data (5 Marks)
             ud_attr = ec2.describe_instance_attribute(InstanceId=found_instance_id, Attribute='userData')
             has_ud = 'Value' in ud_attr.get('UserData', {})
-            grade_step("User Data Script Configured", 10, has_ud)
+            grade_step("User Data Script Configured", 5, has_ud)
+
+            # 4. Check Security Group - Port 80 & 22 (5 Marks) [NEW]
+            sg_ids = [sg['GroupId'] for sg in target_inst.get('SecurityGroups', [])]
+            has_ssh = False
+            has_http = False
+            
+            if sg_ids:
+                sgs = ec2.describe_security_groups(GroupIds=sg_ids)['SecurityGroups']
+                for sg in sgs:
+                    for perm in sg.get('IpPermissions', []):
+                        from_port = perm.get('FromPort')
+                        to_port = perm.get('ToPort')
+                        ip_proto = perm.get('IpProtocol')
+                        
+                        # Check for "All Traffic" (-1)
+                        if ip_proto == '-1':
+                            has_ssh = True
+                            has_http = True
+                        # Check specific TCP ports
+                        elif ip_proto == 'tcp' and from_port is not None and to_port is not None:
+                            if from_port <= 22 and to_port >= 22: has_ssh = True
+                            if from_port <= 80 and to_port >= 80: has_http = True
+            
+            grade_step("Security Group: Ports 22 & 80 Open", 5, (has_ssh and has_http), f"SSH:{has_ssh} HTTP:{has_http}")
             
         else:
             grade_step("EC2 Instance Launched & Running", 10, False, "No running instances found.")
             grade_step("Instance Type is t3.large", 5, False)
-            grade_step("User Data Script Configured", 10, False)
+            grade_step("User Data Script Configured", 5, False)
+            grade_step("Security Group: Ports 22 & 80 Open", 5, False)
 
     except Exception as e:
         print(f"Error Task 1: {e}")
@@ -152,7 +170,6 @@ def main():
         target_asg = next((a for a in asgs if "asg-" in a['AutoScalingGroupName']), None)
         
         if target_asg:
-            # Check if linked to LT
             lt_linked = False
             if 'LaunchTemplate' in target_asg and target_lt:
                 if target_asg['LaunchTemplate']['LaunchTemplateName'] == target_lt['LaunchTemplateName']:
@@ -160,11 +177,10 @@ def main():
             
             grade_step("ASG Created & Linked", 5, lt_linked, f"ASG: {target_asg['AutoScalingGroupName']}")
             
-            # 4. ASG Scaling Config (5 Marks) - Min=1, Max=3, Desired=1
+            # 4. ASG Scaling Config (5 Marks)
             curr_min = target_asg['MinSize']
             curr_max = target_asg['MaxSize']
             curr_des = target_asg['DesiredCapacity']
-            
             is_config_ok = (curr_min == 1 and curr_max == 3 and curr_des == 1)
             grade_step("Scaling Config (Min=1, Max=3, Des=1)", 5, is_config_ok, f"Found Min:{curr_min} Max:{curr_max} Des:{curr_des}")
             
@@ -269,9 +285,6 @@ def main():
             grade_step("index.html Uploaded", 5, has_index)
 
             # 4. Public Access / Policy (5 Marks)
-            # We verify this via the actual HTTP check below, but we can also check policy text if needed.
-            # For this script, we assume if the HTTP check passes, the policy is correct.
-            # We'll do a basic check here if policy exists.
             has_policy = False
             try:
                 pol = s3.get_bucket_policy(Bucket=target_bucket_name)
@@ -281,10 +294,7 @@ def main():
             grade_step("Bucket Policy Configured", 5, has_policy)
 
             # 5. Website Verification (5 Marks)
-            # Construct S3 Website Endpoint
             s3_url = f"http://{target_bucket_name}.s3-website-{region}.amazonaws.com"
-            # Some regions use dash, some dot. Learner Lab is usually us-east-1 (s3-website-us-east-1)
-            
             print(f"    Testing S3: {s3_url}")
             success, msg = check_http_content(s3_url, student_name_input)
             grade_step("Website Verified in Browser", 5, success, msg)

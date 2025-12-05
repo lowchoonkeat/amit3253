@@ -3,6 +3,7 @@ import sys
 import urllib.request
 import urllib.error
 import ssl
+import time
 
 # --- CONFIGURATION ---
 # Ignore SSL certificate errors (common in some lab environments)
@@ -34,7 +35,8 @@ def check_http_content(url, keyword):
         headers = {'User-Agent': 'Mozilla/5.0'}
         req = urllib.request.Request(url, headers=headers)
         
-        with urllib.request.urlopen(req, timeout=5, context=ssl_context) as response:
+        # Timeout set to 3 seconds to avoid hanging
+        with urllib.request.urlopen(req, timeout=3, context=ssl_context) as response:
             if response.status == 200:
                 content = response.read().decode('utf-8')
                 # Check for keyword (student name) case-insensitive
@@ -52,7 +54,7 @@ def check_http_content(url, keyword):
         return False, str(e)
 
 def main():
-    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V2)")
+    print_header("AMIT3253 CLOUD COMPUTING - AUTO GRADER (V3)")
     
     session = boto3.session.Session()
     region = session.region_name
@@ -102,12 +104,7 @@ def main():
             itype = target_inst['InstanceType']
             grade_step("Instance Type is t3.large", 5, itype == 't3.large', f"Found: {itype}")
             
-            # 3. Check User Data (5 Marks)
-            ud_attr = ec2.describe_instance_attribute(InstanceId=found_instance_id, Attribute='userData')
-            has_ud = 'Value' in ud_attr.get('UserData', {})
-            grade_step("User Data Script Configured", 5, has_ud)
-
-            # 4. Check Security Group - Port 80 & 22 (5 Marks) [NEW]
+            # 3. Check Security Group - Port 80 & 22 (5 Marks)
             sg_ids = [sg['GroupId'] for sg in target_inst.get('SecurityGroups', [])]
             has_ssh = False
             has_http = False
@@ -130,12 +127,21 @@ def main():
                             if from_port <= 80 and to_port >= 80: has_http = True
             
             grade_step("Security Group: Ports 22 & 80 Open", 5, (has_ssh and has_http), f"SSH:{has_ssh} HTTP:{has_http}")
+
+            # 4. Check User Data via HTTP (5 Marks) - UPDATED
+            public_ip = target_inst.get('PublicIpAddress')
+            if public_ip:
+                print(f"    Testing EC2 Public IP: http://{public_ip}")
+                success, msg = check_http_content(f"http://{public_ip}", student_name_input)
+                grade_step("Web Page Loads & Shows Name", 5, success, msg)
+            else:
+                grade_step("Web Page Loads & Shows Name", 5, False, "No Public IP assigned to instance")
             
         else:
             grade_step("EC2 Instance Launched & Running", 10, False, "No running instances found.")
             grade_step("Instance Type is t3.large", 5, False)
-            grade_step("User Data Script Configured", 5, False)
             grade_step("Security Group: Ports 22 & 80 Open", 5, False)
+            grade_step("Web Page Loads & Shows Name", 5, False)
 
     except Exception as e:
         print(f"Error Task 1: {e}")
